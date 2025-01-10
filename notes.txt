@@ -1,0 +1,20 @@
+
+export HF_ENDPOINT=https://hf-mirror.com
+huggingface-cli download --resume-download vidore/colpali-v1.3 --local-dir ./model/vidore/colpali-v1.3
+
+huggingface-cli download --repo-type dataset --resume-download yubo2333/MMLongBench-Doc --local-dir ./data/yubo2333/MMLongBench-Doc
+
+vidore/colpali-v1.3
+yubo2333/MMLongBench-Doc
+
+
+January 10th
+
+1) Extract image
+2) Load dataset
+3) Load model
+
+4) Calculate retrieval accuracy
+
+5) Retrieval statistics
+
