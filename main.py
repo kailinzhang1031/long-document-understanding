@@ -1,10 +1,27 @@
-
-# Load dataset
-
 import json
-from torch.utils.data import Dataset
-
 import torch
+from torch.utils.data import Dataset, DataLoader
+
+import pandas as pd
+import numpy as np
+
+import os
+import io
+
+
+import pickle
+
+import pyarrow.parquet as pq
+
+from tqdm import tqdm
+from PIL import Image
+
+from colpali_engine.interpretability import (
+    get_similarity_maps_from_embeddings,
+    plot_all_similarity_maps,
+)
+from colpali_engine.models import ColPali, ColPaliProcessor
+from colpali_engine.utils.torch_utils import get_torch_device
 
 def maxsim_score_torch(Eq: torch.Tensor, Ep: torch.Tensor) -> torch.Tensor:
     """
@@ -172,28 +189,115 @@ class QADataset(Dataset):
             "answer": answer
         }
 
+
+class MPDocQADataset(Dataset):
+    """
+    A custom Dataset for QA (Question-Answer) data stored in JSON format.
+
+    The JSON file should contain a list of objects,
+    each having at least the following structure:
+    {
+      "doc_id": str or int,
+      "question": str,
+      "answer": str
+    }
+    """
+
+    def __init__(self, file_dir):
+        """
+        :param json_file_path: Path to the JSON file containing the dataset.
+        :param transform: Optional transform to apply to the data (e.g., tokenization).
+        """
+        super().__init__()
+        self.file_dir = file_dir
+        self.data = self._load_data()
+
+    def _load_data(self):
+        """
+        Load and parse the JSON file into a Python list of items.
+        Each item must contain keys: 'doc_id', 'question', 'answer'.
+        """
+
+        # get all file names
+        # parquet_dir = "/root/autodl-tmp/data_1/lmms-lab/MP-DocVQA/data"
+
+        parquet_file_list = os.listdir(self.file_dir)
+        parquet_dir = "/root/autodl-tmp/data_1/lmms-lab/MP-DocVQA/data"
+
+        parquet_file_list = os.listdir(parquet_dir)
+
+        parquet_file_list = [p for p in parquet_file_list if p.find("test") != -1]
+
+        parquet_file_dict = [{"index":int(p.split("-")[1]),"file_name":p} for p in parquet_file_list]
+        parquet_file_dict = sorted(parquet_file_dict,key=lambda x: x['index'],reverse=False)
+        parquet_file_dict = [p['file_name'] for p in parquet_file_dict]
+        # read all files and concat into a single DataFrame
+
+        parquet_data_all = []
+        for p in tqdm(parquet_file_dict):
+            parquet_file = pq.ParquetFile(os.path.join(self.file_dir,p))
+            data = parquet_file.read().to_pandas()
+            parquet_data_all.append(data)
+        parquet_data_all = pd.concat(parquet_data_all)
+
+        parquet_data_all = parquet_data_all[parquet_data_all['answers'].map(len) != 0]
+
+        self.data = parquet_data_all[parquet_data_all['data_split'] == 'test']
+
+    def __len__(self):
+        """
+        :return: Number of samples in the dataset.
+        """
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        """
+        :param idx: Index for the sample to retrieve.
+        :return: A single sample as a dict or a tuple, depending on your preference.
+        """
+        sample = self.data[idx]
+        doc_id = sample["doc_id"]
+        question = sample["question"]
+        page_ids = sample['page_ids']
+        num_pages = len(page_ids)
+        answer = sample["answers"]
+        images = sample[7:][:num_pages]
+        # extract images
+        images = [images[k]['bytes'] for k in images.keys()]
+        answer_page_idx = sample["answer_page_idx"]
+
+        assert num_pages == len(images)
+
+        data_split = sample["data_split"]
+        # Return the sample in the desired format
+        return {
+            "doc_id": doc_id,
+            "images": images,
+            "num_pages": str(num_pages),
+            "question": question,
+            "answer": answer,
+            "answer_page_idx": answer_page_idx,
+            "data_split": data_split,
+        }
+
+# Step 1, Load the dataset
 # Example usage:
 # dataset_path = "/root/autodl-tmp/data/samples.json"
 # dataset = QADataset(dataset_path)
 
-# print(f"Dataset size: {len(dataset)}")
-# first_sample = dataset[0]
-# print(first_sample)
+dataset_path = "/root/autodl-tmp/data_1/lmms-lab/MP-DocVQA/data"
+dataset = MPDocQADataset(dataset_path)
+print(f"Dataset size: {len(dataset)}")
+first_sample = dataset[0]
+print(first_sample)
 
-# Load the model
+dataloader = DataLoader(dataset=dataset,batch_size=1,shuffle=False)
+
+# Loading and processing all images
+
+# Step 2, Load the model and processor
 
 model_name = "/root/autodl-tmp/model/vidore/colpali-v1.3"
-
-import torch
-import pickle
-from PIL import Image
-
-from colpali_engine.interpretability import (
-    get_similarity_maps_from_embeddings,
-    plot_all_similarity_maps,
-)
-from colpali_engine.models import ColPali, ColPaliProcessor
-from colpali_engine.utils.torch_utils import get_torch_device
 
 model_name = "vidore/colpali-v1.3"
 device = get_torch_device("auto")
@@ -208,30 +312,40 @@ model = ColPali.from_pretrained(
 # Load the processor
 processor = ColPaliProcessor.from_pretrained(model_name)
 
-# Load the image and query
-# image = Image.open("shift_kazakhstan.jpg")
+# Step 3, Calculating similarity
 
-image_path = "/root/autodl-tmp/data/documents_np/2005.12872v3.np"
+documents_np_path = "/root/autodl-tmp/data/documents_np"
+documents_embedding_path = "/root/autodl-tmp/data/documents_embedding"
 
-with open(image_path,"rb") as f:
-    pages = pickle.load(f)
+for i, data in tqdm(enumerate(dataloader)):
+    # get the query
+    doc_id = data['doc_id'][0]
+    query = data['question'][0]
+    answer = data['answer'][0]
 
-images = [Image.fromarray(page) for page in pages]
+    # get the images
+    image_path = os.path.join(documents_np_path,doc_id.replace(".pdf",".np"))
+    embedding_path = os.path.join(documents_embedding_path, doc_id.replace(".pdf",".np"))
+    with open(image_path,"rb") as f:
+        pages = pickle.load(f)
 
-query = "How many multi-head self-attention layers does DETR's default structure have?"
+    images = [Image.fromarray(page) for page in pages]
 
-# Preprocess inputs
-batch_images = [processor.process_images([image]).to(device) for image in images]
-batch_queries = processor.process_queries([query]).to(device)
+    # Preprocess inputs
+    batch_images = [processor.process_images([image]).to(device) for image in images]
+    batch_queries = processor.process_queries([query]).to(device)
 
+    # Forward passes
+    with torch.no_grad():
+        image_embeddings = [model.forward(**batch_image) for batch_image in batch_images]
+        query_embeddings = model.forward(**batch_queries)
+    image_embeddings = torch.cat(image_embeddings,dim=0)
 
-# Forward passes
-with torch.no_grad():
-    image_embeddings = [model.forward(**batch_image) for batch_image in batch_images]
-    query_embeddings = model.forward(**batch_queries)
+    # with open(embedding_path,"wb") as t:
+    #     pickle.dump(image_embeddings,t)
 
-image_embeddings = torch.cat(image_embeddings,dim=0)
-topk_scores, topk_indices, topk_pages = retrieve_top_k_pages(query_embeddings,image_embeddings,k=2)
+    # Retrieve top-k images
+    topk_scores, topk_indices, topk_pages = retrieve_top_k_pages(query_embeddings,image_embeddings,k=2)
 
 
 # # Get the number of image patches

@@ -2,10 +2,12 @@
 export HF_ENDPOINT=https://hf-mirror.com
 huggingface-cli download --resume-download vidore/colpali-v1.3 --local-dir ./model/vidore/colpali-v1.3
 
-huggingface-cli download --repo-type dataset --resume-download yubo2333/MMLongBench-Doc --local-dir ./data/yubo2333/MMLongBench-Doc
+huggingface-cli download --repo-type dataset --resume-download lmms-lab/MP-DocVQA --local-dir ./data_1/lmms-lab/MP-DocVQA
 
 vidore/colpali-v1.3
 yubo2333/MMLongBench-Doc
+
+lmms-lab/MP-DocVQA
 
 
 January 10th
@@ -17,4 +19,8 @@ January 10th
 4) Calculate retrieval accuracy
 
 5) Retrieval statistics
+    a) rewrite with an iterative manner
+
+    b) implement with MPDocVQA
+    
 
